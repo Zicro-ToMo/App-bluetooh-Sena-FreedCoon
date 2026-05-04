@@ -4,15 +4,19 @@ import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.*
+import android.provider.Settings
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -57,10 +61,12 @@ class MainActivity : AppCompatActivity() {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
-        if (results.all { it.value }) {
-            onPermissionsGranted()
-        } else {
-            showToast("Se requieren permisos de Bluetooth y micrófono")
+        val denied = results.filterValues { !it }.keys
+        when {
+            denied.isEmpty() -> onPermissionsGranted()
+            // Permanently denied — shouldShowRationale returns false after the user checked "Never ask again"
+            denied.any { !shouldShowRequestPermissionRationale(it) } -> showPermissionSettingsDialog()
+            else -> showPermissionRationaleDialog()
         }
     }
 
@@ -96,9 +102,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Bind to service if already running
         val intent = Intent(this, AudioBridgeService::class.java)
-        bindService(intent, serviceConnection, 0) // don't auto-create
+        bindService(intent, serviceConnection, 0)
     }
 
     override fun onPause() {
@@ -112,25 +117,18 @@ class MainActivity : AppCompatActivity() {
     // ── UI Setup ──────────────────────────────────────────────────────────────
 
     private fun setupUI() {
-        // Device A selector
-        binding.cardDeviceA.setOnClickListener {
-            showDevicePicker(DeviceRole.DEVICE_A)
-        }
+        binding.cardDeviceA.setOnClickListener { showDevicePicker(DeviceRole.DEVICE_A) }
         binding.btnClearA.setOnClickListener {
             selectedDeviceA = null
             updateDeviceCard(DeviceRole.DEVICE_A, null)
         }
 
-        // Device B selector
-        binding.cardDeviceB.setOnClickListener {
-            showDevicePicker(DeviceRole.DEVICE_B)
-        }
+        binding.cardDeviceB.setOnClickListener { showDevicePicker(DeviceRole.DEVICE_B) }
         binding.btnClearB.setOnClickListener {
             selectedDeviceB = null
             updateDeviceCard(DeviceRole.DEVICE_B, null)
         }
 
-        // Bridge toggle
         binding.btnBridge.setOnClickListener {
             if (bridgeService?.getBluetoothManager()?.bridgeActive?.value == true) {
                 stopBridge()
@@ -139,10 +137,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Refresh paired devices
-        binding.btnRefresh.setOnClickListener {
-            loadPairedDevices()
-        }
+        binding.btnRefresh.setOnClickListener { loadPairedDevices() }
     }
 
     private fun observeServiceState() {
@@ -151,14 +146,10 @@ class MainActivity : AppCompatActivity() {
         val audioEngine = svc.getAudioEngine()
 
         lifecycleScope.launch {
-            btMgr.deviceA.collect { info ->
-                info?.let { updateDeviceCardFromInfo(DeviceRole.DEVICE_A, it) }
-            }
+            btMgr.deviceA.collect { info -> info?.let { updateDeviceCardFromInfo(DeviceRole.DEVICE_A, it) } }
         }
         lifecycleScope.launch {
-            btMgr.deviceB.collect { info ->
-                info?.let { updateDeviceCardFromInfo(DeviceRole.DEVICE_B, it) }
-            }
+            btMgr.deviceB.collect { info -> info?.let { updateDeviceCardFromInfo(DeviceRole.DEVICE_B, it) } }
         }
         lifecycleScope.launch {
             btMgr.bridgeActive.collect { active ->
@@ -167,19 +158,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
         lifecycleScope.launch {
-            btMgr.statusMessage.collect { msg ->
-                binding.tvStatus.text = msg
-            }
+            btMgr.statusMessage.collect { msg -> binding.tvStatus.text = msg }
         }
         lifecycleScope.launch {
-            audioEngine.volumeLevel.collect { level ->
-                binding.vuMeter.progress = (level * 100).toInt()
-            }
+            audioEngine.volumeLevel.collect { level -> binding.vuMeter.progress = (level * 100).toInt() }
         }
         lifecycleScope.launch {
-            audioEngine.latencyMs.collect { ms ->
-                binding.tvLatency.text = "Latencia: ${ms}ms"
-            }
+            audioEngine.latencyMs.collect { ms -> binding.tvLatency.text = "Latencia: ${ms}ms" }
         }
     }
 
@@ -223,15 +208,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         val names = pairedDevices.map { it.name ?: it.address }.toTypedArray()
-        androidx.appcompat.app.AlertDialog.Builder(this)
+        AlertDialog.Builder(this)
             .setTitle(if (role == DeviceRole.DEVICE_A) "Seleccionar Dispositivo A (FreedConn)" else "Seleccionar Dispositivo B (Sena 10)")
             .setItems(names) { _, idx ->
                 val device = pairedDevices[idx]
-                if (role == DeviceRole.DEVICE_A) {
-                    selectedDeviceA = device
-                } else {
-                    selectedDeviceB = device
-                }
+                if (role == DeviceRole.DEVICE_A) selectedDeviceA = device else selectedDeviceB = device
                 updateDeviceCard(role, device)
             }
             .setNegativeButton("Cancelar", null)
@@ -259,8 +240,8 @@ class MainActivity : AppCompatActivity() {
             ConnectionState.DISCONNECTED -> "Desconectado"
             ConnectionState.CONNECTING   -> "Conectando..."
             ConnectionState.CONNECTED    -> "Conectado"
-            ConnectionState.SCO_ACTIVE   -> "🎙 Voz activa"
-            ConnectionState.ERROR        -> "⚠ Error"
+            ConnectionState.SCO_ACTIVE   -> "Voz activa"
+            ConnectionState.ERROR        -> "Error"
         }
         if (role == DeviceRole.DEVICE_A) {
             binding.tvDeviceAName.text = info.displayName
@@ -274,7 +255,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateBridgeButton(active: Boolean) {
-        binding.btnBridge.text = if (active) "⏹ Detener Puente" else "▶ Iniciar Puente"
+        binding.btnBridge.text = if (active) "Detener Puente" else "Iniciar Puente"
         binding.btnBridge.setBackgroundColor(
             ContextCompat.getColor(this, if (active) R.color.stop_red else R.color.start_green)
         )
@@ -283,15 +264,18 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    // ── Permissions & BT Init ─────────────────────────────────────────────────
+    // ── Permissions ───────────────────────────────────────────────────────────
 
     private fun checkPermissions() {
-        val missing = requiredPermissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
+        val missing = getMissingPermissions()
         if (missing.isEmpty()) onPermissionsGranted()
-        else permissionLauncher.launch(missing.toTypedArray())
+        else permissionLauncher.launch(missing)
     }
+
+    private fun getMissingPermissions(): Array<String> =
+        requiredPermissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }.toTypedArray()
 
     private fun onPermissionsGranted() {
         if (bluetoothAdapter?.isEnabled == false) {
@@ -299,6 +283,58 @@ class MainActivity : AppCompatActivity() {
             return
         }
         loadPairedDevices()
+        requestBatteryOptimizationExemption()
+    }
+
+    private fun showPermissionRationaleDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Permisos requeridos")
+            .setMessage("MotoLink necesita acceso al micrófono y Bluetooth para crear el puente de audio entre los intercomunicadores FreedConn y Sena 10.")
+            .setPositiveButton("Conceder permisos") { _, _ -> permissionLauncher.launch(getMissingPermissions()) }
+            .setNegativeButton("Cancelar") { _, _ -> showPermissionDeniedUI() }
+            .show()
+    }
+
+    private fun showPermissionSettingsDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Permisos bloqueados")
+            .setMessage("Los permisos están bloqueados permanentemente. Ve a Configuración → Aplicaciones → MotoLink → Permisos para habilitarlos.")
+            .setPositiveButton("Abrir Configuración") { _, _ ->
+                try {
+                    startActivity(
+                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = Uri.fromParts("package", packageName, null)
+                        }
+                    )
+                } catch (e: ActivityNotFoundException) {
+                    startActivity(Intent(Settings.ACTION_SETTINGS))
+                }
+            }
+            .setNegativeButton("Cancelar") { _, _ -> showPermissionDeniedUI() }
+            .show()
+    }
+
+    private fun showPermissionDeniedUI() {
+        binding.tvStatus.text = "Se requieren permisos de micrófono y Bluetooth para usar MotoLink"
+        binding.btnBridge.isEnabled = false
+        binding.cardDeviceA.isEnabled = false
+        binding.cardDeviceB.isEnabled = false
+    }
+
+    // Ask user to exclude MotoLink from battery optimization so Samsung One UI
+    // doesn't kill the service during an active bridge session.
+    private fun requestBatteryOptimizationExemption() {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (pm.isIgnoringBatteryOptimizations(packageName)) return
+        try {
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+            )
+        } catch (e: ActivityNotFoundException) {
+            // Device doesn't support this intent — ignore silently
+        }
     }
 
     private fun loadPairedDevices() {

@@ -6,28 +6,14 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.os.Process
 import android.util.Log
-import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlin.math.sqrt
 
 private const val TAG = "AudioBridge"
 
-/**
- * Real-time audio bridge engine.
- *
- * Captures audio from the active SCO Bluetooth microphone (AudioRecord)
- * and plays it back through the active SCO speaker (AudioTrack).
- *
- * When running as a bridge between two HFP devices:
- * - The phone's AudioManager routes SCO to one device at a time
- * - This engine performs a continuous loopback on that channel
- * - The BluetoothManager toggles which device owns SCO at an interval
- *   so both parties hear each other in alternating 80ms windows
- *
- * Sample rate: 16000 Hz (wideband voice / mSBC codec used by Sena/FreedConn)
- * Buffer: ~80ms per read/write cycle for low latency
- */
 class AudioBridgeEngine {
 
     companion object {
@@ -35,11 +21,12 @@ class AudioBridgeEngine {
         const val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO
         const val CHANNEL_OUT = AudioFormat.CHANNEL_OUT_MONO
         const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
-        // Each switch cycle: read from A, write to B, then swap
-        const val SWITCH_INTERVAL_MS = 80L
+        // 20ms frame — minimum viable for SCO/HFP over BT (radio adds ~30ms, total ~50ms RTT)
+        const val FRAME_MS = 20L
     }
 
-    private var job: Job? = null
+    @Volatile private var running = false
+    private var audioThread: Thread? = null
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
 
@@ -53,12 +40,13 @@ class AudioBridgeEngine {
     val volumeLevel: StateFlow<Float> = _volumeLevel
 
     fun start(audioManager: AudioManager) {
-        if (_isRunning.value) return
+        if (running) return
 
-        val minBufferIn = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, ENCODING)
-        val minBufferOut = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, ENCODING)
-        // Use 2x min buffer for stability, rounded to 80ms worth of samples
-        val bufferSize = maxOf(minBufferIn, minBufferOut, (SAMPLE_RATE * 2 * SWITCH_INTERVAL_MS / 1000).toInt())
+        val minBufIn = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, ENCODING)
+        val minBufOut = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, ENCODING)
+        // 16000 samples/s * 2 bytes * 20ms = 640 bytes per frame
+        val frameSizeBytes = (SAMPLE_RATE * 2 * FRAME_MS / 1000).toInt()
+        val bufferSize = maxOf(minBufIn, minBufOut, frameSizeBytes)
 
         try {
             audioRecord = AudioRecord(
@@ -82,6 +70,7 @@ class AudioBridgeEngine {
                 )
                 .setBufferSizeInBytes(bufferSize)
                 .setTransferMode(AudioTrack.MODE_STREAM)
+                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                 .build()
 
             if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
@@ -95,61 +84,47 @@ class AudioBridgeEngine {
 
             audioRecord?.startRecording()
             audioTrack?.play()
+            running = true
             _isRunning.value = true
 
-            job = CoroutineScope(Dispatchers.IO).launch {
+            // Dedicated high-priority thread — avoids coroutine scheduler jitter on audio path
+            audioThread = Thread({
+                Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
                 val buffer = ShortArray(bufferSize / 2)
-                Log.d(TAG, "Bridge loop started — buffer=$bufferSize bytes")
+                Log.d(TAG, "Bridge loop started — buffer=$bufferSize bytes (${FRAME_MS}ms / frame)")
 
-                while (isActive && _isRunning.value) {
+                while (running) {
                     val t0 = System.currentTimeMillis()
-
-                    // Read from BT mic (SCO in)
-                    val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
-
+                    val read = audioRecord?.read(buffer, 0, buffer.size) ?: break
                     if (read > 0) {
-                        // Calculate RMS for VU meter
                         var sum = 0.0
                         for (i in 0 until read) sum += buffer[i] * buffer[i].toDouble()
-                        val rms = Math.sqrt(sum / read).toFloat()
-                        _volumeLevel.value = (rms / Short.MAX_VALUE).coerceIn(0f, 1f)
-
-                        // Write to BT speaker (SCO out) — this loops voice back through bridge
+                        _volumeLevel.value = (sqrt(sum / read).toFloat() / Short.MAX_VALUE).coerceIn(0f, 1f)
                         audioTrack?.write(buffer, 0, read)
                     }
-
-                    val elapsed = System.currentTimeMillis() - t0
-                    _latencyMs.value = elapsed
-
-                    // Prevent tight spin if read returns immediately
-                    if (read <= 0) delay(10)
+                    _latencyMs.value = System.currentTimeMillis() - t0
                 }
-            }
+            }, "AudioBridgeThread")
+            audioThread?.start()
 
         } catch (e: SecurityException) {
             Log.e(TAG, "Permission denied for AudioRecord: ${e.message}")
         } catch (e: Exception) {
             Log.e(TAG, "Bridge start error: ${e.message}")
+            stop()
         }
     }
 
     fun stop() {
+        running = false
         _isRunning.value = false
-        job?.cancel()
-        job = null
+        audioThread?.join(500)
+        audioThread = null
 
-        try {
-            audioRecord?.stop()
-            audioRecord?.release()
-            audioRecord = null
-        } catch (e: Exception) { Log.e(TAG, "AudioRecord stop: ${e.message}") }
-
-        try {
-            audioTrack?.stop()
-            audioTrack?.release()
-            audioTrack = null
-        } catch (e: Exception) { Log.e(TAG, "AudioTrack stop: ${e.message}") }
-
+        try { audioRecord?.stop(); audioRecord?.release() } catch (e: Exception) { Log.e(TAG, "AR stop: ${e.message}") }
+        try { audioTrack?.stop(); audioTrack?.release() } catch (e: Exception) { Log.e(TAG, "AT stop: ${e.message}") }
+        audioRecord = null
+        audioTrack = null
         _volumeLevel.value = 0f
         _latencyMs.value = 0L
     }

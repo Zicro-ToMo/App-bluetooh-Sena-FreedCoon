@@ -2,8 +2,10 @@ package com.motolink.app.service
 
 import android.app.*
 import android.content.*
+import android.content.pm.ServiceInfo
 import android.media.AudioManager
 import android.os.*
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
@@ -23,7 +25,6 @@ class AudioBridgeService : LifecycleService() {
         const val EXTRA_ADDR_A = "addr_a"
         const val EXTRA_ADDR_B = "addr_b"
 
-        // Shared instance so MainActivity can observe state
         var instance: AudioBridgeService? = null
     }
 
@@ -35,6 +36,10 @@ class AudioBridgeService : LifecycleService() {
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MotoLink::BridgeWake")
     }
 
+    // Persist device addresses so onTaskRemoved can restart with correct devices
+    private var lastAddrA: String? = null
+    private var lastAddrB: String? = null
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -42,14 +47,13 @@ class AudioBridgeService : LifecycleService() {
         btManager.initialize()
         createNotificationChannel()
 
-        // Start audio engine when bridge becomes active
         btManager.bridgeActive.onEach { active ->
             if (active) {
                 audioEngine.start(audioManager)
-                updateNotification("🔴 Puente activo")
+                updateNotification("Puente activo")
             } else {
                 audioEngine.stop()
-                updateNotification("⏸ Puente detenido")
+                updateNotification("Puente detenido")
             }
         }.launchIn(lifecycleScope)
     }
@@ -57,12 +61,20 @@ class AudioBridgeService : LifecycleService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
 
-        startForeground(NOTIF_ID, buildNotification("Iniciando..."))
+        val notification = buildNotification("Iniciando...")
+        // Specify foreground service type for Android 10+ — required for microphone access
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+        } else {
+            startForeground(NOTIF_ID, notification)
+        }
 
         when (intent?.action) {
             ACTION_START -> {
                 val addrA = intent.getStringExtra(EXTRA_ADDR_A)
                 val addrB = intent.getStringExtra(EXTRA_ADDR_B)
+                lastAddrA = addrA
+                lastAddrB = addrB
                 handleStart(addrA, addrB)
             }
             ACTION_STOP -> {
@@ -86,6 +98,26 @@ class AudioBridgeService : LifecycleService() {
         }
     }
 
+    // Called when user swipes app from recents — Samsung One UI may kill the process.
+    // Schedule a restart via AlarmManager so the bridge recovers automatically.
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        if (lastAddrA == null && lastAddrB == null) return
+
+        val restartIntent = Intent(applicationContext, AudioBridgeService::class.java).apply {
+            action = ACTION_START
+            putExtra(EXTRA_ADDR_A, lastAddrA)
+            putExtra(EXTRA_ADDR_B, lastAddrB)
+        }
+        val pending = PendingIntent.getService(
+            applicationContext, 1, restartIntent,
+            PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val alarm = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        alarm.set(AlarmManager.ELAPSED_REALTIME, SystemClock.elapsedRealtime() + 2000L, pending)
+        Log.d("MotoLinkService", "Service task removed — restart scheduled in 2s")
+    }
+
     override fun onDestroy() {
         btManager.stopBridge()
         btManager.destroy()
@@ -100,17 +132,22 @@ class AudioBridgeService : LifecycleService() {
         return null
     }
 
-    // Expose managers to Activity
     fun getBluetoothManager() = btManager
     fun getAudioEngine() = audioEngine
 
     // ── Notification ──────────────────────────────────────────────────────────
 
     private fun createNotificationChannel() {
+        // IMPORTANCE_DEFAULT keeps One UI from collapsing/dismissing the notification;
+        // sound is disabled on the channel so it's silent despite the higher importance.
         val channel = NotificationChannel(
             CHANNEL_ID, "MotoLink Bridge",
-            NotificationManager.IMPORTANCE_LOW
-        ).apply { description = "Puente de voz activo entre intercomunicadores" }
+            NotificationManager.IMPORTANCE_DEFAULT
+        ).apply {
+            description = "Puente de voz activo entre intercomunicadores"
+            setSound(null, null)
+            enableVibration(false)
+        }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
@@ -120,12 +157,18 @@ class AudioBridgeService : LifecycleService() {
             Intent(this, AudioBridgeService::class.java).apply { action = ACTION_STOP },
             PendingIntent.FLAG_IMMUTABLE
         )
+        val openAppIntent = PendingIntent.getActivity(
+            this, 0,
+            packageManager.getLaunchIntentForPackage(packageName),
+            PendingIntent.FLAG_IMMUTABLE
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("MotoLink")
             .setContentText(status)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setOngoing(true)
+            .setContentIntent(openAppIntent)
             .addAction(android.R.drawable.ic_media_pause, "Detener", stopIntent)
             .build()
     }
@@ -135,3 +178,4 @@ class AudioBridgeService : LifecycleService() {
             .notify(NOTIF_ID, buildNotification(status))
     }
 }
+

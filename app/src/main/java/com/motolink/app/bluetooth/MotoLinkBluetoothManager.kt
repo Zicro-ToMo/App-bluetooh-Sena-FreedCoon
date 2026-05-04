@@ -12,10 +12,12 @@ import android.util.Log
 import com.motolink.app.model.BtDeviceInfo
 import com.motolink.app.model.ConnectionState
 import com.motolink.app.model.DeviceRole
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 private const val TAG = "MotoLinkBT"
+private const val MAX_RECONNECT_ATTEMPTS = 3
 
 @SuppressLint("MissingPermission")
 class MotoLinkBluetoothManager(private val context: Context) {
@@ -25,10 +27,7 @@ class MotoLinkBluetoothManager(private val context: Context) {
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
-    // HFP proxy for voice calls
     private var headsetProxy: BluetoothHeadset? = null
-
-    // Currently active SCO device index (0 = A, 1 = B)
     private var activeScoIndex = 0
 
     private val _deviceA = MutableStateFlow<BtDeviceInfo?>(null)
@@ -42,6 +41,11 @@ class MotoLinkBluetoothManager(private val context: Context) {
 
     private val _statusMessage = MutableStateFlow("Listo para conectar")
     val statusMessage: StateFlow<String> = _statusMessage
+
+    // Reconnection state
+    private val reconnectScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var reconnectJob: Job? = null
+    private var reconnectAttempts = 0
 
     // ── HFP Profile Listener ──────────────────────────────────────────────────
 
@@ -91,6 +95,7 @@ class MotoLinkBluetoothManager(private val context: Context) {
             Log.d(TAG, "SCO state: $state")
             when (state) {
                 AudioManager.SCO_AUDIO_STATE_CONNECTED -> {
+                    reconnectAttempts = 0
                     _statusMessage.value = "SCO activo — Puente de voz en línea"
                     updateActiveDeviceState(ConnectionState.SCO_ACTIVE)
                 }
@@ -120,6 +125,8 @@ class MotoLinkBluetoothManager(private val context: Context) {
     }
 
     fun destroy() {
+        reconnectJob?.cancel()
+        reconnectScope.cancel()
         stopBridge()
         try {
             context.unregisterReceiver(headsetReceiver)
@@ -148,19 +155,6 @@ class MotoLinkBluetoothManager(private val context: Context) {
 
     // ── Bridge Control ────────────────────────────────────────────────────────
 
-    /**
-     * Starts the audio bridge between Device A and Device B.
-     *
-     * Strategy:
-     * Both devices connect via HFP. Android SCO only supports ONE active
-     * SCO channel at a time at the OS level. We use a fast-switching approach:
-     * - Device A opens SCO → audio captured via AudioRecord → sent to AudioTrack on SCO
-     * - Every SWITCH_INTERVAL_MS we toggle SCO to Device B to pick up audio from B → route to A
-     *
-     * This creates a half-duplex style bridge. For true full-duplex the
-     * audio engine in AudioBridgeService handles continuous loopback on
-     * whichever SCO is currently active.
-     */
     fun startBridge(): Boolean {
         val a = _deviceA.value
         val b = _deviceB.value
@@ -170,13 +164,14 @@ class MotoLinkBluetoothManager(private val context: Context) {
             return false
         }
 
-        // Configure AudioManager for SCO voice
+        reconnectAttempts = 0
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        @Suppress("DEPRECATION")
         audioManager.isSpeakerphoneOn = false
 
-        // Start SCO — connects to both paired HFP devices
-        // Android will route SCO to the "active" HFP device
+        @Suppress("DEPRECATION")
         audioManager.startBluetoothSco()
+        @Suppress("DEPRECATION")
         audioManager.isBluetoothScoOn = true
 
         _deviceA.value = a.copy(state = ConnectionState.CONNECTING)
@@ -188,8 +183,11 @@ class MotoLinkBluetoothManager(private val context: Context) {
     }
 
     fun stopBridge() {
+        reconnectJob?.cancel()
         _bridgeActive.value = false
+        @Suppress("DEPRECATION")
         audioManager.isBluetoothScoOn = false
+        @Suppress("DEPRECATION")
         audioManager.stopBluetoothSco()
         audioManager.mode = AudioManager.MODE_NORMAL
 
@@ -218,10 +216,49 @@ class MotoLinkBluetoothManager(private val context: Context) {
         }
         Log.d(TAG, "Headset state change: ${device.name} → $newState")
 
-        if (_deviceA.value?.device?.address == device.address)
-            _deviceA.value = _deviceA.value?.copy(state = newState)
-        if (_deviceB.value?.device?.address == device.address)
-            _deviceB.value = _deviceB.value?.copy(state = newState)
+        val isDeviceA = _deviceA.value?.device?.address == device.address
+        val isDeviceB = _deviceB.value?.device?.address == device.address
+
+        if (isDeviceA) _deviceA.value = _deviceA.value?.copy(state = newState)
+        if (isDeviceB) _deviceB.value = _deviceB.value?.copy(state = newState)
+
+        // Auto-reconnect when a bridge device drops unexpectedly
+        if (newState == ConnectionState.DISCONNECTED && _bridgeActive.value && (isDeviceA || isDeviceB)) {
+            val name = if (isDeviceA) _deviceA.value?.displayName else _deviceB.value?.displayName
+            Log.d(TAG, "Bridge device dropped: $name — scheduling reconnect")
+            _statusMessage.value = "${name ?: device.address} desconectado — reconectando..."
+            scheduleReconnect()
+        }
+    }
+
+    private fun scheduleReconnect() {
+        reconnectAttempts++
+        if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+            _statusMessage.value = "No se pudo reconectar tras $MAX_RECONNECT_ATTEMPTS intentos. Reinicia el puente."
+            stopBridge()
+            return
+        }
+
+        reconnectJob?.cancel()
+        reconnectJob = reconnectScope.launch {
+            val delayMs = reconnectAttempts * 2000L  // 2s, 4s, 6s
+            Log.d(TAG, "Reconnect attempt $reconnectAttempts/$MAX_RECONNECT_ATTEMPTS in ${delayMs}ms")
+            _statusMessage.value = "Reconectando (intento $reconnectAttempts/$MAX_RECONNECT_ATTEMPTS)..."
+            delay(delayMs)
+
+            if (!isActive || !_bridgeActive.value) return@launch
+
+            // Cycle SCO to force renegotiation with the remaining active device
+            @Suppress("DEPRECATION")
+            audioManager.stopBluetoothSco()
+            delay(500)
+            if (!isActive || !_bridgeActive.value) return@launch
+            @Suppress("DEPRECATION")
+            audioManager.startBluetoothSco()
+            @Suppress("DEPRECATION")
+            audioManager.isBluetoothScoOn = true
+            _statusMessage.value = "SCO reiniciado — esperando dispositivo..."
+        }
     }
 
     private fun handleAudioStateChange(device: BluetoothDevice?, state: Int) {

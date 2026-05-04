@@ -1,0 +1,40 @@
+# Android build output
+/build/
+app/build/
+*.apk
+*.aab
+*.ap_
+
+# Gradle cache & wrapper jar (solo se guarda properties, no el jar binario)
+.gradle/
+gradle/wrapper/gradle-wrapper.jar
+
+# Local SDK/NDK paths (específico de cada máquina)
+local.properties
+
+# Android Studio / IntelliJ IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.DS_Store
+
+# Captures de pantalla de prueba
+pantalla.png
+pantalla2.png
+
+# Proguard generated
+proguard/
+
+# Google services
+google-services.json
+
+# Keystore files
+*.jks
+*.keystore
+
+# OS files
+Thumbs.db
+
+# Claude Code internal config
+.claude/
