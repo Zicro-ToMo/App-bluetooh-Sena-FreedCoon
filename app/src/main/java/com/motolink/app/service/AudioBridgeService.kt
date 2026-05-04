@@ -12,9 +12,12 @@ import androidx.lifecycle.lifecycleScope
 import com.motolink.app.audio.AudioBridgeEngine
 import com.motolink.app.bluetooth.DiagnosticScanner
 import com.motolink.app.bluetooth.MotoLinkBluetoothManager
+import com.motolink.app.model.ConnectionState
 import com.motolink.app.model.DeviceRole
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
 
 class AudioBridgeService : LifecycleService() {
 
@@ -25,6 +28,8 @@ class AudioBridgeService : LifecycleService() {
         const val ACTION_STOP  = "com.motolink.STOP_BRIDGE"
         const val EXTRA_ADDR_A = "addr_a"
         const val EXTRA_ADDR_B = "addr_b"
+
+        private const val TAG = "MotoLinkService"
 
         var instance: AudioBridgeService? = null
     }
@@ -37,7 +42,6 @@ class AudioBridgeService : LifecycleService() {
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MotoLink::BridgeWake")
     }
 
-    // Persist device addresses so onTaskRemoved can restart with correct devices
     private var lastAddrA: String? = null
     private var lastAddrB: String? = null
 
@@ -48,9 +52,13 @@ class AudioBridgeService : LifecycleService() {
         btManager.initialize()
         createNotificationChannel()
 
+        // FIX C: Do not start the engine the instant bridgeActive becomes true.
+        // SCO is not yet established at that moment — starting immediately causes
+        // AudioRecord to capture from the phone mic and AudioTrack to output on
+        // the phone speaker. Use waitForScoThenStartEngine() to defer until SCO_ACTIVE.
         btManager.bridgeActive.onEach { active ->
             if (active) {
-                audioEngine.start(audioManager)
+                waitForScoThenStartEngine()
                 updateNotification("Puente activo")
             } else {
                 audioEngine.stop()
@@ -63,7 +71,6 @@ class AudioBridgeService : LifecycleService() {
         super.onStartCommand(intent, flags, startId)
 
         val notification = buildNotification("Iniciando...")
-        // Specify foreground service type for Android 10+ — required for microphone access
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
         } else {
@@ -95,12 +102,38 @@ class AudioBridgeService : LifecycleService() {
         if (deviceB != null) btManager.assignDevice(deviceB, DeviceRole.DEVICE_B)
 
         if (btManager.startBridge()) {
-            if (!wakeLock.isHeld) wakeLock.acquire(4 * 60 * 60 * 1000L) // 4h max
+            if (!wakeLock.isHeld) wakeLock.acquire(4 * 60 * 60 * 1000L)
         }
     }
 
-    // Called when user swipes app from recents — Samsung One UI may kill the process.
-    // Schedule a restart via AlarmManager so the bridge recovers automatically.
+    // FIX C: Poll every 300ms until at least one device reaches SCO_ACTIVE state,
+    // confirming that the SCO audio channel is established and routing is correct.
+    // Maximum wait: 15 × 300ms = 4.5 seconds. Falls through to start anyway so the
+    // bridge doesn't silently fail if the SCO state notification is delayed.
+    private fun waitForScoThenStartEngine() {
+        lifecycleScope.launch {
+            val maxAttempts = 15
+            for (attempt in 1..maxAttempts) {
+                if (!btManager.bridgeActive.value) return@launch  // bridge was stopped
+
+                val aActive = btManager.deviceA.value?.state == ConnectionState.SCO_ACTIVE
+                val bActive = btManager.deviceB.value?.state == ConnectionState.SCO_ACTIVE
+                if (aActive || bActive) {
+                    Log.d(TAG, "SCO confirmed active after ${attempt * 300}ms — starting audio engine")
+                    audioEngine.start(audioManager)
+                    return@launch
+                }
+                delay(300L)
+            }
+            // Fallback: SCO state didn't update within timeout (e.g. old firmware).
+            // Start anyway so the bridge isn't silently broken.
+            if (btManager.bridgeActive.value) {
+                Log.w(TAG, "SCO wait timed out (${maxAttempts * 300}ms) — starting engine as fallback")
+                audioEngine.start(audioManager)
+            }
+        }
+    }
+
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
         if (lastAddrA == null && lastAddrB == null) return
@@ -116,13 +149,14 @@ class AudioBridgeService : LifecycleService() {
         )
         val alarm = getSystemService(Context.ALARM_SERVICE) as AlarmManager
         alarm.set(AlarmManager.ELAPSED_REALTIME, SystemClock.elapsedRealtime() + 2000L, pending)
-        Log.d("MotoLinkService", "Service task removed — restart scheduled in 2s")
+        Log.d(TAG, "Service task removed — restart scheduled in 2s")
     }
 
     override fun onDestroy() {
         btManager.stopBridge()
         btManager.destroy()
-        audioEngine.stop()
+        // FIX C: release() explicitly frees native AudioRecord/AudioTrack hardware resources
+        audioEngine.release()
         if (wakeLock.isHeld) wakeLock.release()
         instance = null
         super.onDestroy()
@@ -136,10 +170,8 @@ class AudioBridgeService : LifecycleService() {
     fun getBluetoothManager() = btManager
     fun getAudioEngine() = audioEngine
 
-    // Ends the current voice session but keeps the service alive so the user
-    // can restart the bridge immediately without waiting for a full service restart.
     fun endSession() {
-        btManager.stopBridge()   // sets bridgeActive=false → observer stops audioEngine
+        btManager.stopBridge()
         updateNotification("Listo para reiniciar")
     }
 
@@ -148,8 +180,6 @@ class AudioBridgeService : LifecycleService() {
     // ── Notification ──────────────────────────────────────────────────────────
 
     private fun createNotificationChannel() {
-        // IMPORTANCE_DEFAULT keeps One UI from collapsing/dismissing the notification;
-        // sound is disabled on the channel so it's silent despite the higher importance.
         val channel = NotificationChannel(
             CHANNEL_ID, "MotoLink Bridge",
             NotificationManager.IMPORTANCE_DEFAULT
@@ -188,4 +218,3 @@ class AudioBridgeService : LifecycleService() {
             .notify(NOTIF_ID, buildNotification(status))
     }
 }
-

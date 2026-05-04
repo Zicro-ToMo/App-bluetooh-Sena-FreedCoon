@@ -42,6 +42,13 @@ class AudioBridgeEngine {
     fun start(audioManager: AudioManager) {
         if (running) return
 
+        // FIX B: Verify SCO is actually active before starting the bridge loop.
+        // If false here, audio will route to the phone speaker. This log helps
+        // confirm in Logcat that applyBtOnlyRouting() ran before engine start.
+        @Suppress("DEPRECATION")
+        val scoOn = audioManager.isBluetoothScoOn
+        Log.d(TAG, "SCO activo: $scoOn")
+
         val minBufIn = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, ENCODING)
         val minBufOut = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, ENCODING)
         // 16000 samples/s * 2 bytes * 20ms = 640 bytes per frame
@@ -49,6 +56,8 @@ class AudioBridgeEngine {
         val bufferSize = maxOf(minBufIn, minBufOut, frameSizeBytes)
 
         try {
+            // FIX B: VOICE_COMMUNICATION captures from the active BT microphone (SCO in),
+            // not from the phone's built-in microphone.
             audioRecord = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 SAMPLE_RATE, CHANNEL_IN, ENCODING, bufferSize
@@ -59,6 +68,10 @@ class AudioBridgeEngine {
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        // FIX B: FLAG_AUDIBILITY_ENFORCED prevents Android's AudioPolicyManager
+                        // from silently falling back to the phone speaker if it loses track
+                        // of the SCO route during the audio session.
+                        .setFlags(AudioAttributes.FLAG_AUDIBILITY_ENFORCED)
                         .build()
                 )
                 .setAudioFormat(
@@ -91,7 +104,7 @@ class AudioBridgeEngine {
             audioThread = Thread({
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
                 val buffer = ShortArray(bufferSize / 2)
-                Log.d(TAG, "Bridge loop started — buffer=$bufferSize bytes (${FRAME_MS}ms / frame)")
+                Log.d(TAG, "Bridge engine started — buffer=$bufferSize bytes (${FRAME_MS}ms / frame)")
 
                 while (running) {
                     val t0 = System.currentTimeMillis()
@@ -128,4 +141,8 @@ class AudioBridgeEngine {
         _volumeLevel.value = 0f
         _latencyMs.value = 0L
     }
+
+    // Explicit release of native audio hardware resources — alias for stop().
+    // Called from onDestroy() to signal intentional teardown vs transient stop.
+    fun release() = stop()
 }

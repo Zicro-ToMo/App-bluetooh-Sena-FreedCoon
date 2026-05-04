@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 
 private const val TAG = "MotoLinkBT"
 private const val MAX_RECONNECT_ATTEMPTS = 3
+private const val MAX_SCO_RECONNECT = 5
 
 @SuppressLint("MissingPermission")
 class MotoLinkBluetoothManager(private val context: Context) {
@@ -42,10 +43,14 @@ class MotoLinkBluetoothManager(private val context: Context) {
     private val _statusMessage = MutableStateFlow("Listo para conectar")
     val statusMessage: StateFlow<String> = _statusMessage
 
-    // Reconnection state
+    // HFP device-level reconnect (handles device physically dropping)
     private val reconnectScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var reconnectJob: Job? = null
     private var reconnectAttempts = 0
+
+    // SCO channel-level reconnect (handles SCO dropout without full BT disconnect)
+    private var scoReconnectJob: Job? = null
+    private var scoReconnectAttempts = 0
 
     // ── HFP Profile Listener ──────────────────────────────────────────────────
 
@@ -92,16 +97,25 @@ class MotoLinkBluetoothManager(private val context: Context) {
     private val scoReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
             val state = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1)
-            Log.d(TAG, "SCO state: $state")
+            Log.d(TAG, "SCO state broadcast: $state")
             when (state) {
                 AudioManager.SCO_AUDIO_STATE_CONNECTED -> {
                     reconnectAttempts = 0
+                    scoReconnectAttempts = 0
+                    scoReconnectJob?.cancel()
+                    // FIX A: Apply BT-only routing HERE, after SCO is confirmed.
+                    // Applying it in startBridge() is a race condition — Android can
+                    // override isSpeakerphoneOn during SCO negotiation, causing fallback
+                    // to the phone speaker.
+                    applyBtOnlyRouting()
                     _statusMessage.value = "SCO activo — Puente de voz en línea"
                     updateActiveDeviceState(ConnectionState.SCO_ACTIVE)
                 }
                 AudioManager.SCO_AUDIO_STATE_DISCONNECTED -> {
                     _statusMessage.value = "SCO desconectado"
                     updateActiveDeviceState(ConnectionState.CONNECTED)
+                    // Auto-retry SCO if the bridge should still be active
+                    if (_bridgeActive.value) scheduleScoReconnect()
                 }
                 AudioManager.SCO_AUDIO_STATE_ERROR -> {
                     _statusMessage.value = "Error en SCO"
@@ -126,6 +140,7 @@ class MotoLinkBluetoothManager(private val context: Context) {
 
     fun destroy() {
         reconnectJob?.cancel()
+        scoReconnectJob?.cancel()
         reconnectScope.cancel()
         stopBridge()
         try {
@@ -165,14 +180,15 @@ class MotoLinkBluetoothManager(private val context: Context) {
         }
 
         reconnectAttempts = 0
+        scoReconnectAttempts = 0
+
+        // FIX A: Only set MODE and kick off SCO negotiation here.
+        // Do NOT set isSpeakerphoneOn or isBluetoothScoOn yet — SCO is not established
+        // at this point. The full routing is applied in applyBtOnlyRouting() once
+        // SCO_AUDIO_STATE_CONNECTED confirms the channel is ready.
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
         @Suppress("DEPRECATION")
-        audioManager.isSpeakerphoneOn = false
-
-        @Suppress("DEPRECATION")
         audioManager.startBluetoothSco()
-        @Suppress("DEPRECATION")
-        audioManager.isBluetoothScoOn = true
 
         _deviceA.value = a.copy(state = ConnectionState.CONNECTING)
         _deviceB.value = b.copy(state = ConnectionState.CONNECTING)
@@ -184,6 +200,7 @@ class MotoLinkBluetoothManager(private val context: Context) {
 
     fun stopBridge() {
         reconnectJob?.cancel()
+        scoReconnectJob?.cancel()
         _bridgeActive.value = false
         @Suppress("DEPRECATION")
         audioManager.isBluetoothScoOn = false
@@ -208,6 +225,39 @@ class MotoLinkBluetoothManager(private val context: Context) {
 
     // ── Internal ──────────────────────────────────────────────────────────────
 
+    // Called ONLY from SCO_AUDIO_STATE_CONNECTED. Applying routing before SCO is
+    // established lets Android's audio policy override it during negotiation,
+    // routing audio to the phone speaker instead of the BT channel.
+    private fun applyBtOnlyRouting() {
+        Log.d(TAG, "SCO CONNECTED — applying audio routing fixes")
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        @Suppress("DEPRECATION")
+        audioManager.isSpeakerphoneOn = false
+        @Suppress("DEPRECATION")
+        audioManager.isBluetoothScoOn = true
+    }
+
+    // Retries SCO negotiation up to MAX_SCO_RECONNECT times with 1500ms between attempts.
+    // Triggered when SCO drops while bridgeActive is still true.
+    private fun scheduleScoReconnect() {
+        if (scoReconnectAttempts >= MAX_SCO_RECONNECT) {
+            Log.w(TAG, "SCO reconnect exhausted after $MAX_SCO_RECONNECT attempts — stopping bridge")
+            _statusMessage.value = "No se pudo reconectar SCO. Reinicia el puente."
+            stopBridge()
+            return
+        }
+        scoReconnectAttempts++
+        scoReconnectJob?.cancel()
+        scoReconnectJob = reconnectScope.launch {
+            Log.d(TAG, "SCO reconnect attempt $scoReconnectAttempts/$MAX_SCO_RECONNECT — waiting 1500ms")
+            _statusMessage.value = "Reconectando SCO ($scoReconnectAttempts/$MAX_SCO_RECONNECT)..."
+            delay(1500L)
+            if (!isActive || !_bridgeActive.value) return@launch
+            @Suppress("DEPRECATION")
+            audioManager.startBluetoothSco()
+        }
+    }
+
     private fun handleHeadsetConnectionChange(device: BluetoothDevice?, state: Int) {
         device ?: return
         val newState = when (state) {
@@ -224,10 +274,9 @@ class MotoLinkBluetoothManager(private val context: Context) {
         if (isDeviceA) _deviceA.value = _deviceA.value?.copy(state = newState)
         if (isDeviceB) _deviceB.value = _deviceB.value?.copy(state = newState)
 
-        // Auto-reconnect when a bridge device drops unexpectedly
         if (newState == ConnectionState.DISCONNECTED && _bridgeActive.value && (isDeviceA || isDeviceB)) {
             val name = if (isDeviceA) _deviceA.value?.displayName else _deviceB.value?.displayName
-            Log.d(TAG, "Bridge device dropped: $name — scheduling reconnect")
+            Log.d(TAG, "Bridge device dropped: $name — scheduling HFP reconnect")
             _statusMessage.value = "${name ?: device.address} desconectado — reconectando..."
             scheduleReconnect()
         }
@@ -243,22 +292,19 @@ class MotoLinkBluetoothManager(private val context: Context) {
 
         reconnectJob?.cancel()
         reconnectJob = reconnectScope.launch {
-            val delayMs = reconnectAttempts * 2000L  // 2s, 4s, 6s
-            Log.d(TAG, "Reconnect attempt $reconnectAttempts/$MAX_RECONNECT_ATTEMPTS in ${delayMs}ms")
+            val delayMs = reconnectAttempts * 2000L
+            Log.d(TAG, "HFP reconnect attempt $reconnectAttempts/$MAX_RECONNECT_ATTEMPTS in ${delayMs}ms")
             _statusMessage.value = "Reconectando (intento $reconnectAttempts/$MAX_RECONNECT_ATTEMPTS)..."
             delay(delayMs)
 
             if (!isActive || !_bridgeActive.value) return@launch
 
-            // Cycle SCO to force renegotiation with the remaining active device
             @Suppress("DEPRECATION")
             audioManager.stopBluetoothSco()
             delay(500)
             if (!isActive || !_bridgeActive.value) return@launch
             @Suppress("DEPRECATION")
             audioManager.startBluetoothSco()
-            @Suppress("DEPRECATION")
-            audioManager.isBluetoothScoOn = true
             _statusMessage.value = "SCO reiniciado — esperando dispositivo..."
         }
     }
