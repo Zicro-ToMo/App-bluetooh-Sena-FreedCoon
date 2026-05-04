@@ -1,0 +1,309 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg_dark"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <!-- Header -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="24dp">
+
+            <View
+                android:id="@+id/indicatorBridge"
+                android:layout_width="12dp"
+                android:layout_height="12dp"
+                android:background="@drawable/circle_indicator"
+                android:backgroundTint="@color/indicator_off"
+                android:layout_marginEnd="12dp"/>
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="MotoLink"
+                android:textSize="28sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_primary"
+                android:fontFamily="sans-serif-condensed"/>
+
+            <Button
+                android:id="@+id/btnRefresh"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="↻"
+                android:textColor="@color/accent_orange"
+                app:strokeColor="@color/accent_orange"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"/>
+        </LinearLayout>
+
+        <!-- Paired count -->
+        <TextView
+            android:id="@+id/tvPairedCount"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Verificando dispositivos..."
+            android:textColor="@color/text_secondary"
+            android:textSize="13sp"
+            android:layout_marginBottom="16dp"/>
+
+        <!-- Device A Card -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="DISPOSITIVO A"
+            android:textColor="@color/accent_orange"
+            android:textSize="11sp"
+            android:letterSpacing="0.15"
+            android:textStyle="bold"
+            android:layout_marginBottom="8dp"/>
+
+        <androidx.cardview.widget.CardView
+            android:id="@+id/cardDeviceA"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="20dp"
+            app:cardBackgroundColor="@color/card_bg"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="4dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <ImageView
+                        android:layout_width="40dp"
+                        android:layout_height="40dp"
+                        android:src="@android:drawable/stat_sys_data_bluetooth"
+                        android:tint="@color/accent_orange"
+                        android:layout_marginEnd="12dp"/>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:id="@+id/tvDeviceAName"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Toca para seleccionar"
+                            android:textColor="@color/text_primary"
+                            android:textSize="16sp"
+                            android:textStyle="bold"/>
+
+                        <TextView
+                            android:id="@+id/tvDeviceAAddr"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text=""
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp"/>
+
+                        <TextView
+                            android:id="@+id/tvDeviceAStatus"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text=""
+                            android:textColor="@color/start_green"
+                            android:textSize="12sp"/>
+                    </LinearLayout>
+
+                    <Button
+                        android:id="@+id/btnClearA"
+                        style="@style/Widget.MaterialComponents.Button.TextButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="✕"
+                        android:textColor="@color/text_secondary"
+                        android:visibility="gone"/>
+                </LinearLayout>
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+        <!-- Device B Card -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="DISPOSITIVO B"
+            android:textColor="@color/accent_blue"
+            android:textSize="11sp"
+            android:letterSpacing="0.15"
+            android:textStyle="bold"
+            android:layout_marginBottom="8dp"/>
+
+        <androidx.cardview.widget.CardView
+            android:id="@+id/cardDeviceB"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="28dp"
+            app:cardBackgroundColor="@color/card_bg"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="4dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <ImageView
+                        android:layout_width="40dp"
+                        android:layout_height="40dp"
+                        android:src="@android:drawable/stat_sys_data_bluetooth"
+                        android:tint="@color/accent_blue"
+                        android:layout_marginEnd="12dp"/>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:id="@+id/tvDeviceBName"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Toca para seleccionar"
+                            android:textColor="@color/text_primary"
+                            android:textSize="16sp"
+                            android:textStyle="bold"/>
+
+                        <TextView
+                            android:id="@+id/tvDeviceBAddr"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text=""
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp"/>
+
+                        <TextView
+                            android:id="@+id/tvDeviceBStatus"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text=""
+                            android:textColor="@color/accent_blue"
+                            android:textSize="12sp"/>
+                    </LinearLayout>
+
+                    <Button
+                        android:id="@+id/btnClearB"
+                        style="@style/Widget.MaterialComponents.Button.TextButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="✕"
+                        android:textColor="@color/text_secondary"
+                        android:visibility="gone"/>
+                </LinearLayout>
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+        <!-- Bridge Button -->
+        <Button
+            android:id="@+id/btnBridge"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:text="▶ Iniciar Puente"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="@color/text_primary"
+            android:backgroundTint="@color/start_green"
+            android:layout_marginBottom="20dp"/>
+
+        <!-- VU Meter (visible only when active) -->
+        <LinearLayout
+            android:id="@+id/vuMeterContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone"
+            android:layout_marginBottom="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="NIVEL DE VOZ"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp"
+                android:letterSpacing="0.15"
+                android:layout_marginBottom="6dp"/>
+
+            <ProgressBar
+                android:id="@+id/vuMeter"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="12dp"
+                android:max="100"
+                android:progress="0"
+                android:progressTint="@color/accent_orange"
+                android:progressBackgroundTint="@color/card_bg"/>
+
+            <TextView
+                android:id="@+id/tvLatency"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Latencia: 0ms"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp"
+                android:layout_marginTop="6dp"/>
+        </LinearLayout>
+
+        <!-- Status -->
+        <androidx.cardview.widget.CardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardBackgroundColor="@color/card_bg"
+            app:cardCornerRadius="8dp"
+            app:cardElevation="2dp">
+
+            <TextView
+                android:id="@+id/tvStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Listo para conectar"
+                android:textColor="@color/text_secondary"
+                android:textSize="13sp"
+                android:padding="14dp"/>
+        </androidx.cardview.widget.CardView>
+
+        <!-- Instructions -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="1. Empareja FreedConn y Sena 10 en Ajustes → Bluetooth\n2. Selecciona cada dispositivo arriba\n3. Presiona Iniciar Puente\n4. Habla — la voz se enruta en tiempo real"
+            android:textColor="@color/text_secondary"
+            android:textSize="13sp"
+            android:lineSpacingExtra="4dp"
+            android:layout_marginTop="20dp"
+            android:padding="4dp"/>
+
+    </LinearLayout>
+</ScrollView>
