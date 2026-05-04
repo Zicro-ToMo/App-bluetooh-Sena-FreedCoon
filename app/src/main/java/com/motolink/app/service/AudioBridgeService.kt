@@ -10,6 +10,7 @@ import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.motolink.app.audio.AudioBridgeEngine
+import com.motolink.app.bluetooth.DiagnosticScanner
 import com.motolink.app.bluetooth.MotoLinkBluetoothManager
 import com.motolink.app.model.DeviceRole
 import kotlinx.coroutines.flow.launchIn
@@ -134,6 +135,15 @@ class AudioBridgeService : LifecycleService() {
 
     fun getBluetoothManager() = btManager
     fun getAudioEngine() = audioEngine
+
+    // Ends the current voice session but keeps the service alive so the user
+    // can restart the bridge immediately without waiting for a full service restart.
+    fun endSession() {
+        btManager.stopBridge()   // sets bridgeActive=false → observer stops audioEngine
+        updateNotification("Listo para reiniciar")
+    }
+
+    fun getDiagnosticScanner() = DiagnosticScanner(btManager.getHeadsetProxy())
 
     // ── Notification ──────────────────────────────────────────────────────────
 

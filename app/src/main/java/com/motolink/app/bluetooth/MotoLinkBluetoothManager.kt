@@ -204,6 +204,8 @@ class MotoLinkBluetoothManager(private val context: Context) {
 
     fun isBluetoothEnabled() = bluetoothAdapter?.isEnabled == true
 
+    fun getHeadsetProxy(): BluetoothHeadset? = headsetProxy
+
     // ── Internal ──────────────────────────────────────────────────────────────
 
     private fun handleHeadsetConnectionChange(device: BluetoothDevice?, state: Int) {

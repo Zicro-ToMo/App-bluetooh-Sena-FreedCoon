@@ -226,6 +226,18 @@
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 
+        <!-- Diagnostic Button -->
+        <Button
+            android:id="@+id/btnDiagnose"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="🔍 Verificar Dispositivos"
+            android:textColor="@color/text_secondary"
+            android:textSize="14sp"
+            app:strokeColor="@color/indicator_off"
+            android:layout_marginBottom="14dp"/>
+
         <!-- Bridge Button -->
         <Button
             android:id="@+id/btnBridge"
@@ -236,6 +248,19 @@
             android:textStyle="bold"
             android:textColor="@color/text_primary"
             android:backgroundTint="@color/start_green"
+            android:layout_marginBottom="10dp"/>
+
+        <!-- End Call Button — corta solo la sesión de voz, el servicio sigue activo -->
+        <Button
+            android:id="@+id/btnEndCall"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:text="⏹ Finalizar Conversación"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:textColor="@color/text_primary"
+            android:backgroundTint="@color/end_call_amber"
+            android:visibility="gone"
             android:layout_marginBottom="20dp"/>
 
         <!-- VU Meter (visible only when active) -->
@@ -274,6 +299,102 @@
                 android:textColor="@color/text_secondary"
                 android:textSize="12sp"
                 android:layout_marginTop="6dp"/>
+
+            <!-- Volume Controls -->
+            <androidx.cardview.widget.CardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                app:cardBackgroundColor="@color/card_bg"
+                app:cardCornerRadius="10dp"
+                app:cardElevation="2dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="14dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="VOLUMEN"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="11sp"
+                        android:letterSpacing="0.15"
+                        android:layout_marginBottom="12dp"/>
+
+                    <!-- Music volume row -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="10dp">
+
+                        <TextView
+                            android:layout_width="60dp"
+                            android:layout_height="wrap_content"
+                            android:text="🎵 Música"
+                            android:textColor="@color/text_primary"
+                            android:textSize="12sp"/>
+
+                        <SeekBar
+                            android:id="@+id/seekbarMusicVolume"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:layout_marginStart="8dp"
+                            android:layout_marginEnd="8dp"
+                            android:progressTint="@color/accent_blue"
+                            android:thumbTint="@color/accent_blue"/>
+
+                        <TextView
+                            android:id="@+id/tvMusicVolPct"
+                            android:layout_width="36dp"
+                            android:layout_height="wrap_content"
+                            android:text="50%"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp"
+                            android:gravity="end"/>
+                    </LinearLayout>
+
+                    <!-- Voice volume row -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <TextView
+                            android:layout_width="60dp"
+                            android:layout_height="wrap_content"
+                            android:text="🎙 Voz"
+                            android:textColor="@color/text_primary"
+                            android:textSize="12sp"/>
+
+                        <SeekBar
+                            android:id="@+id/seekbarVoiceVolume"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:layout_marginStart="8dp"
+                            android:layout_marginEnd="8dp"
+                            android:progressTint="@color/accent_orange"
+                            android:thumbTint="@color/accent_orange"/>
+
+                        <TextView
+                            android:id="@+id/tvVoiceVolPct"
+                            android:layout_width="36dp"
+                            android:layout_height="wrap_content"
+                            android:text="50%"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp"
+                            android:gravity="end"/>
+                    </LinearLayout>
+
+                </LinearLayout>
+            </androidx.cardview.widget.CardView>
         </LinearLayout>
 
         <!-- Status -->

@@ -10,10 +10,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.net.Uri
 import android.os.*
 import android.provider.Settings
 import android.view.View
+import android.widget.SeekBar
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -22,17 +24,24 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.motolink.app.R
 import com.motolink.app.databinding.ActivityMainBinding
+import com.motolink.app.bluetooth.DiagnosticResult
+import com.motolink.app.bluetooth.DiagnosticScanner
+import com.motolink.app.bluetooth.DiagnosticStatus
 import com.motolink.app.model.BtDeviceInfo
 import com.motolink.app.model.ConnectionState
 import com.motolink.app.model.DeviceRole
 import com.motolink.app.service.AudioBridgeService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private var bridgeService: AudioBridgeService? = null
     private var isBound = false
+
+    private val audioManager by lazy { getSystemService(Context.AUDIO_SERVICE) as AudioManager }
 
     private var selectedDeviceA: BluetoothDevice? = null
     private var selectedDeviceB: BluetoothDevice? = null
@@ -137,7 +146,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        binding.btnEndCall.setOnClickListener { endConversation() }
+
+        binding.btnDiagnose.setOnClickListener { runDiagnostic() }
+
         binding.btnRefresh.setOnClickListener { loadPairedDevices() }
+
+        setupVolumeControls()
     }
 
     private fun observeServiceState() {
@@ -155,6 +170,7 @@ class MainActivity : AppCompatActivity() {
             btMgr.bridgeActive.collect { active ->
                 updateBridgeButton(active)
                 binding.vuMeterContainer.visibility = if (active) View.VISIBLE else View.GONE
+                if (active) initVolumeSliders()
             }
         }
         lifecycleScope.launch {
@@ -197,6 +213,13 @@ class MainActivity : AppCompatActivity() {
             action = AudioBridgeService.ACTION_STOP
         }
         startService(intent)
+    }
+
+    // Cuts the active voice session but leaves the service and BT connections alive
+    // so the user can restart the bridge without a full service restart cycle.
+    private fun endConversation() {
+        bridgeService?.endSession()
+        showToast("Conversación finalizada")
     }
 
     // ── Device Picker ─────────────────────────────────────────────────────────
@@ -262,6 +285,7 @@ class MainActivity : AppCompatActivity() {
         binding.indicatorBridge.setBackgroundColor(
             ContextCompat.getColor(this, if (active) R.color.start_green else R.color.indicator_off)
         )
+        binding.btnEndCall.visibility = if (active) View.VISIBLE else View.GONE
     }
 
     // ── Permissions ───────────────────────────────────────────────────────────
@@ -347,6 +371,125 @@ class MainActivity : AppCompatActivity() {
         if (pairedDevices.isEmpty()) {
             binding.tvStatus.text = "Ve a Ajustes → Bluetooth y empareja FreedConn y Sena 10 primero"
         }
+    }
+
+    // ── Diagnostic Scanner ────────────────────────────────────────────────────
+
+    private fun runDiagnostic() {
+        val devA = selectedDeviceA
+        val devB = selectedDeviceB
+        if (devA == null && devB == null) {
+            showToast("Selecciona al menos un dispositivo primero")
+            return
+        }
+
+        binding.btnDiagnose.isEnabled = false
+        binding.btnDiagnose.text = "Analizando..."
+
+        lifecycleScope.launch {
+            val scanner = bridgeService?.getDiagnosticScanner() ?: DiagnosticScanner(null)
+            val resultA = devA?.let { withContext(Dispatchers.Default) { scanner.scanDevice(it) } }
+            val resultB = devB?.let { withContext(Dispatchers.Default) { scanner.scanDevice(it) } }
+
+            binding.btnDiagnose.isEnabled = true
+            binding.btnDiagnose.text = "🔍 Verificar Dispositivos"
+            showDiagnosticDialog(devA, resultA, devB, resultB)
+        }
+    }
+
+    private fun showDiagnosticDialog(
+        devA: BluetoothDevice?, resultA: DiagnosticResult?,
+        devB: BluetoothDevice?, resultB: DiagnosticResult?
+    ) {
+        fun icon(s: DiagnosticStatus) = when (s) {
+            DiagnosticStatus.BUENO       -> "✅"
+            DiagnosticStatus.ADVERTENCIA -> "⚠️"
+            DiagnosticStatus.ERROR       -> "❌"
+        }
+
+        val sb = StringBuilder()
+        resultA?.let { r ->
+            sb.append("[Dispositivo A] ${devA?.name ?: devA?.address}\n")
+            sb.append("${icon(r.status)} ${r.status}  —  ${r.mensaje}\n")
+            sb.append("Sugerencia: ${r.sugerencia}\n")
+        }
+        if (resultA != null && resultB != null) sb.append("\n")
+        resultB?.let { r ->
+            sb.append("[Dispositivo B] ${devB?.name ?: devB?.address}\n")
+            sb.append("${icon(r.status)} ${r.status}  —  ${r.mensaje}\n")
+            sb.append("Sugerencia: ${r.sugerencia}")
+        }
+
+        val hasErrors = resultA?.status == DiagnosticStatus.ERROR ||
+                        resultB?.status == DiagnosticStatus.ERROR
+
+        AlertDialog.Builder(this)
+            .setTitle("Diagnóstico de Dispositivos")
+            .setMessage(sb.toString())
+            .setPositiveButton("Cerrar", null)
+            .apply {
+                if (hasErrors) {
+                    setNeutralButton("Intentar reconectar") { _, _ ->
+                        tryReconnect(devA, resultA, devB, resultB)
+                    }
+                }
+            }
+            .show()
+    }
+
+    @Suppress("MissingPermission")
+    private fun tryReconnect(
+        devA: BluetoothDevice?, resultA: DiagnosticResult?,
+        devB: BluetoothDevice?, resultB: DiagnosticResult?
+    ) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                if (resultA?.status == DiagnosticStatus.ERROR && devA != null) devA.createBond()
+                if (resultB?.status == DiagnosticStatus.ERROR && devB != null) devB.createBond()
+            } catch (_: Exception) { }
+        }
+        showToast("Intentando reconectar...")
+    }
+
+    // ── Volume Controls ───────────────────────────────────────────────────────
+
+    private fun setupVolumeControls() {
+        binding.seekbarMusicVolume.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, progress, 0)
+                val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                binding.tvMusicVolPct.text = "${progress * 100 / max}%"
+            }
+            override fun onStartTrackingTouch(sb: SeekBar) {}
+            override fun onStopTrackingTouch(sb: SeekBar) {}
+        })
+
+        binding.seekbarVoiceVolume.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, progress, 0)
+                val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL).coerceAtLeast(1)
+                binding.tvVoiceVolPct.text = "${progress * 100 / max}%"
+            }
+            override fun onStartTrackingTouch(sb: SeekBar) {}
+            override fun onStopTrackingTouch(sb: SeekBar) {}
+        })
+    }
+
+    // Sync slider positions with current system volume when bridge becomes active.
+    private fun initVolumeSliders() {
+        val maxMusic = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        val curMusic = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        binding.seekbarMusicVolume.max = maxMusic
+        binding.seekbarMusicVolume.progress = curMusic
+        binding.tvMusicVolPct.text = "${curMusic * 100 / maxMusic}%"
+
+        val maxVoice = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL).coerceAtLeast(1)
+        val curVoice = audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
+        binding.seekbarVoiceVolume.max = maxVoice
+        binding.seekbarVoiceVolume.progress = curVoice
+        binding.tvVoiceVolPct.text = "${curVoice * 100 / maxVoice}%"
     }
 
     private fun showToast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()

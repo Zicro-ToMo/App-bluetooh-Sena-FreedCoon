@@ -9,4 +9,5 @@
     <color name="start_green">#00C853</color>
     <color name="stop_red">#F44336</color>
     <color name="indicator_off">#333333</color>
+    <color name="end_call_amber">#FF8F00</color>
 </resources>
